@@ -1,0 +1,17 @@
+name: "Replace tokens"
+description: "Replace tokens in files
+author: "cschleiden"
+inputs:
+  tokenPrefix:
+    description: ""
+    default: "#__#"
+  tokenSuffix:
+    description: ""
+    default: "#__#"
+  files:
+    description: ""
+    default: ""
+runs:
+  using: "node20"
+  main: "dist/index.js" 
+
