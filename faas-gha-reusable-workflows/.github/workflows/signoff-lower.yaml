@@ -1,0 +1,228 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      environment:
+
+        required: true
+
+        type: string
+
+      service_name:
+
+        required: true
+
+        type: string
+
+      build_version:
+
+        required: true
+
+        type: string
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      release_type:
+
+        type: string
+
+        default: services
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+
+
+jobs:
+
+  sign_off:
+
+    name: ${{ inputs.environment }} sign off
+
+    environment: ${{ inputs.environment }}
+
+    runs-on: 
+
+      group: WB-US-DEV-RELEASE-RUNNERS
+
+    steps:
+
+      - name: Get release version from approval comments
+
+        if: ${{ inputs.environment == 'us-qa' }}
+
+        run: |
+
+          response=$(curl -sS -X GET \
+
+            -H "Authorization: Bearer ${{ secrets.WB_GITHUB_TOKEN }}" \
+
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+
+            https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/approvals)
+
+
+
+          echo "$response" > release_response.json
+
+  
+
+          # Extract the comment that starts with "R" for the environment "us-qa"
+
+          approved_versions=$(jq -r 'map(select(.environments[].name == "us-qa") | .comment | select(. | startswith("R")) | ltrimstr("R")) | unique' release_response.json)
+
+
+
+          versions_length=$(echo "$approved_versions" | jq -r '. | length')
+
+          release=$(echo "$approved_versions" | jq -r '.[]')
+
+          release="${release%% *}"
+
+
+
+          if [ "$versions_length" -eq "1" ]; then
+
+            echo "Found release: $release"
+
+            echo "release=$release" >> $GITHUB_ENV
+
+          elif [ "$versions_length" -eq "0" ]; then
+
+            echo "::error title=Invalid release version::The release version provided in the approval comment doesn't have the proper format. It should start with 'R'. Example: R4.1.5"
+
+            exit 1
+
+          else
+
+            echo "Approved versions ${approved_versions}"
+
+            echo "::error title=Invalid release version::There are multiple release versions in the approval comments. Please make sure to only have one release version. Example: R4.1.5"
+
+            exit 1
+
+          fi
+
+      - name: Checkout configs repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-services-configurations
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: configs
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Replace workflow env in variables files
+
+        uses: ./tools/.github/actions/replace-tokens
+
+        with:
+
+          tokenPrefix: '#__#'
+
+          tokenSuffix: '#__#'
+
+          files: '["./tools/variables/workflow.yaml"]'
+
+      - name: Set environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      # PULL build secrets - JFROG username/pass
+
+      - name: Import Vault build secrets
+
+        uses: hashicorp/vault-action@v3
+
+        with:
+
+          url: ${{ env.BUILD_VAULT_URL }}
+
+          namespace: ${{ env.BUILD_VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.BUILD_VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_JFROG_USERNAME | JFROG_USERNAME ;
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_JFROG_PASSWORD | JFROG_PASSWORD ;
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_GITHUB_TOKEN | FAAS_GITHUB_TOKEN ;
+
+            
+
+      - name: Promote service to QA
+
+        if: ${{ inputs.environment == 'us-dev' && !inputs.testing_mode && (inputs.release_type == 'services' || inputs.release_type == 'mfe-host') }}
+
+        uses: ./tools/.github/actions/promote
+
+        with:
+
+          service_name: ${{ inputs.service_name }}
+
+          environment: 'qa'
+
+          build_version: ${{ inputs.build_version }}
+
+          jf_username: ${{ env.JFROG_USERNAME }}
+
+          jf_password: ${{ env.JFROG_PASSWORD }}
+
+      - name: Retrieve and update release file
+
+        if: ${{ inputs.environment == 'us-qa' }}
+
+        run: python3 ./tools/scripts/release-files-update/update-version-in-file.py
+
+        env:
+
+          INPUTS_SERVICE_NAME: ${{ inputs.service_name }}
+
+          INPUTS_BUILD_VERSION: ${{ inputs.build_version }}
+
+          INPUTS_FILE: ${{ env.release }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml
+
+          INPUTS_BRANCH: releases/${{ env.release }}
+
+          FAAS_GITHUB_TOKEN: ${{ env.FAAS_GITHUB_TOKEN }}
+
+          INPUTS_REPO: ${{ inputs.testing_mode && 'pwc-gx-data-services/faas-gha-testing-release-workflows' || 'pwc-gx-data-services/faas-gha-release-workflows' }}
+
