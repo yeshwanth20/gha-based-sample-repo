@@ -1,0 +1,310 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      environment:
+
+        required: true
+
+        type: string
+
+      service_name:
+
+        required: true
+
+        type: string
+
+      build_version:
+
+        required: true
+
+        type: string
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      release_version:
+
+        type: string
+
+        required: false
+
+        default: ''
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+      release_type:
+
+        type: string
+
+        default: services
+
+
+
+jobs:
+
+  deploy:
+
+    name: ${{ inputs.environment }} deployment
+
+    env:
+
+      SERVICE_NAME: ${{ inputs.service_name }}
+
+      IMAGE_REPO: ${{ inputs.service_name }}
+
+      BUILD_NUMBER: ${{ inputs.service_name }}-${{ inputs.build_version }}
+
+      SERVICE_HOST_PREFIX: ${{ inputs.service_name }}
+
+    environment: ${{ inputs.environment != 'us-dev' && (inputs.testing_mode && 'us-dev' || inputs.environment) || '' }}
+
+    runs-on: 
+
+      group: WB-${{ inputs.testing_mode && 'us-dev' || inputs.environment }}-RELEASE-RUNNERS
+
+    steps:
+
+      - name: Checkout configs repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-services-configurations
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: configs
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Split environment
+
+        run: |
+
+          environment="${{ inputs.testing_mode && 'us-dev' || inputs.environment }}"
+
+          split=(${environment//-/ })
+
+          echo "REGION=${split[0]}" >> "$GITHUB_ENV"
+
+          echo "ENV=${split[1]}" >> "$GITHUB_ENV"
+
+      - name: Replace workflow env in variables files
+
+        uses: ./tools/.github/actions/replace-tokens
+
+        with:
+
+          tokenPrefix: '#__#'
+
+          tokenSuffix: '#__#'
+
+          files: '["./tools/variables/workflow.yaml"]'
+
+      - name: Set environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+          cat ./tools/variables/workflow.yaml | yq -r '."${{ inputs.testing_mode && 'us-dev' || inputs.environment }}" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Set deployment namespace
+
+        id: set_namespace
+
+        run: |
+
+          kubernetes_namespace=$(yq -r '.deployment.namespaceOverride // "${{ env.K8S_NAMESPACE }}"' ./configs/${{ inputs.service_name }}/${{ env.REGION }}-${{ env.ENV }}.yaml)
+
+          echo "Using kubernetes namespace ${kubernetes_namespace}"
+
+          echo "kubernetes_namespace=${kubernetes_namespace}" >> $GITHUB_OUTPUT
+
+      - name: Import Vault kubeconfig secrets
+
+        uses: hashicorp/vault-action@v3
+
+        with:
+
+          url: ${{ env.KUBE_VAULT_URL }}
+
+          namespace: ${{ env.KUBE_VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.KUBE_VAULT_ENGINE }}/data/${{ env.REGION }}/${{ env.ENV }}/kube-config kube | K8S_CONFIG ;            
+
+      # PULL build secrets - JFROG username/pass
+
+      - name: Import Vault build secrets
+
+        uses: hashicorp/vault-action@v3
+
+        with:
+
+          url: ${{ env.VAULT_URL }}
+
+          namespace: ${{ env.VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.VAULT_ENGINE }}/data/${{ env.REGION }}/${{ env.ENV }}/ci-cd JFROG_USERNAME | JFROG_USERNAME ; 
+
+            ${{ env.VAULT_ENGINE }}/data/${{ env.REGION }}/${{ env.ENV }}/ci-cd JFROG_PASSWORD | JFROG_PASSWORD ; 
+
+      - name: Run helm template to see what will be deployed
+
+        env:
+
+          KUBERNETES_NAMESPACE: ${{ steps.set_namespace.outputs.kubernetes_namespace }}
+
+        run: |
+
+          echo ${{ env.JFROG_PASSWORD }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ env.JFROG_USERNAME }} --password-stdin
+
+          helm template -n $KUBERNETES_NAMESPACE -f configs/${{ inputs.service_name }}/${{ env.REGION }}-${{ env.ENV }}.yaml --set global.environment=${{ env.REGION }}-${{ env.ENV }} ${{ inputs.service_name }} oci://${{ env.DOCKER_REGISTRY }}/helm-charts/${{ inputs.service_name }} --version ${{ inputs.build_version }}
+
+      - name: Set K8S context
+
+        uses: azure/k8s-set-context@v4
+
+        with:
+
+          method: kubeconfig
+
+          kubeconfig: ${{ env.K8S_CONFIG }}
+
+      - name: Apply helm deployment
+
+        run: |
+
+          echo ${{ env.JFROG_PASSWORD }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ env.JFROG_USERNAME }} --password-stdin
+
+          helm upgrade -n $KUBERNETES_NAMESPACE \
+
+            -f configs/${{ inputs.service_name }}/${{ env.REGION }}-${{ env.ENV }}.yaml \
+
+            --set global.environment=${{ env.REGION }}-${{ env.ENV }} \
+
+            --set general.deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%S%:z") \
+
+            --install ${{ inputs.service_name }} \
+
+            oci://${{ env.DOCKER_REGISTRY }}/helm-charts/${{ inputs.service_name }} \
+
+            --version ${{ inputs.build_version }} \
+
+            --wait \
+
+            --timeout 15m0s \
+
+            --take-ownership
+
+        env:
+
+          KUBERNETES_NAMESPACE: ${{ steps.set_namespace.outputs.kubernetes_namespace }}
+
+      - name: Get failed releases
+
+        if: ${{ always() }}
+
+        env:
+
+          CONFIG_FILE_NAME: ${{ env.REGION }}-${{ env.ENV }}.yaml
+
+          CONFIGS_ROOT_PATH: "configs"
+
+        run: |
+
+          release_names=("${{ inputs.service_name }}")
+
+
+
+          set +e  # Disable exit on error
+
+          ./tools/scripts/deployment-status/get-deployment-status.sh ${release_names[@]}
+
+          set -e  # Re-enable exit on error
+
+      - name: Update latest version file
+
+        if: ${{ inputs.release_version != '' }}
+
+        run: python3 ./tools/scripts/release-files-update/update-version-in-file.py
+
+        env:
+
+          INPUTS_SERVICE_NAME: ${{ inputs.service_name }}
+
+          INPUTS_BUILD_VERSION: ${{ inputs.build_version }}
+
+          INPUTS_FILE: latest/${{ inputs.release_type }}/${{ inputs.environment }}.yaml
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          WB_GITHUB_TOKEN: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          INPUTS_REPO: ${{ inputs.testing_mode && 'pwc-gx-data-services/faas-gha-testing-release-workflows' || 'pwc-gx-data-services/faas-gha-release-workflows' }} 
+
+          INPUTS_BACKUP_FILE: "${{ inputs.release_version }}/${{ inputs.release_type }}/rollback/${{ inputs.environment }}.yaml"
+
+      - name: Update release version file
+
+        if: ${{ inputs.release_version != ''}}
+
+        run: python3 ./tools/scripts/release-files-update/update-version-in-file.py
+
+        env:
+
+          INPUTS_SERVICE_NAME: ${{ inputs.service_name }}
+
+          INPUTS_BUILD_VERSION: ${{ inputs.build_version }}
+
+          INPUTS_FILE: ${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          WB_GITHUB_TOKEN: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          INPUTS_REPO: ${{ inputs.testing_mode && 'pwc-gx-data-services/faas-gha-testing-release-workflows' || 'pwc-gx-data-services/faas-gha-release-workflows' }}
+
