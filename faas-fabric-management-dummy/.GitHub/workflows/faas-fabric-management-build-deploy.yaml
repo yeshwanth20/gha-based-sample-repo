@@ -1,0 +1,63 @@
+name: faas-fabric-management - Build and Deploy
+
+
+
+on:
+
+  workflow_dispatch:
+
+  pull_request:
+
+  push:
+
+    branches:
+
+      - 'develop'
+
+  release:
+
+    types: [published]
+
+
+
+run-name: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name || github.run_number) }}
+
+
+
+jobs:
+
+  build:
+
+    name: Build
+
+    uses: pwc-gx-data-services/faas-gha-reusable-workflows/.github/workflows/build.yaml@develop
+
+    with:
+
+      service_name: faas-fabric-management
+
+      skip_veracode: true
+
+      default_branch: develop
+
+    secrets: inherit
+
+
+
+  deploy:
+
+    name: Deploy
+
+    needs: [build]
+
+    uses: pwc-gx-data-services/faas-gha-reusable-workflows/.github/workflows/deploy-lower.yaml@develop
+
+    with:
+
+      service_name: faas-fabric-management
+
+      default_branch: develop
+
+      build_version: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name || github.run_number) }}
+
+    secrets: inherit
