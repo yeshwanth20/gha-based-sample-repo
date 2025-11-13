@@ -1,0 +1,168 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      service_name:
+
+        required: true
+
+        type: string
+
+      build_version:
+
+        required: true
+
+        type: string
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      skip_smoke_test:
+
+        type: boolean
+
+        default: false
+
+      skip_regression_test:
+
+        type: boolean
+
+        default: false
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+      release_type:
+
+        type: string
+
+        default: services
+
+
+
+permissions:
+
+  contents: read
+
+  id-token: write
+
+  
+
+jobs:
+
+  us_dev_deploy:
+
+    name: "us-dev deploy"
+
+    if: ${{ !failure() && !cancelled() && github.event_name != 'pull_request' }}
+
+    uses: ./.github/workflows/deploy-helm.yaml
+
+    with:
+
+      environment: us-dev
+
+      service_name: ${{ inputs.service_name }}
+
+      build_version: ${{ inputs.build_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  us_dev_sign_off:
+
+    name: "us-dev sign off"
+
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'release' || github.ref_type == 'tag') }}
+
+    needs: [us_dev_deploy]
+
+    uses: ./.github/workflows/signoff-lower.yaml
+
+    with:
+
+      environment: us-dev
+
+      service_name: ${{ inputs.service_name }}
+
+      build_version: ${{ inputs.build_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  us_qa_deploy:
+
+    name: "us-qa deploy"
+
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'release' || github.ref_type == 'tag') }}
+
+    needs: [us_dev_sign_off]
+
+    uses: ./.github/workflows/deploy-helm.yaml
+
+    with:
+
+      environment: us-qa
+
+      service_name: ${{ inputs.service_name }}
+
+      build_version: ${{ inputs.build_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  us_qa_sign_off:
+
+    name: "us-qa sign off"
+
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'release' || github.ref_type == 'tag') }}
+
+    needs: [us_qa_deploy]
+
+    uses: ./.github/workflows/signoff-lower.yaml
+
+    with:
+
+      environment: us-qa
+
+      service_name: ${{ inputs.service_name }}
+
+      build_version: ${{ inputs.build_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
