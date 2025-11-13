@@ -1,0 +1,138 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      project_name:
+
+        type: string
+
+        required: true
+
+      previous_environment:
+
+        required: true
+
+        type: string
+
+      release_version:
+
+        required: true
+
+        type: string
+
+      release_type:
+
+        type: string
+
+        default: services
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      next_env:
+
+        type: string
+
+        required: false
+
+        default: ''
+
+      next_regions:
+
+        type: string
+
+        required: false
+
+        default: '[]'
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+
+
+permissions:
+
+  contents: read
+
+  id-token: write
+
+
+
+jobs:
+
+  qa_signoff:
+
+    name: ${{ inputs.previous_environment }} qa sign off
+
+    environment: qa-approval
+
+    runs-on: 
+
+      group: WB-US-DEV-RELEASE-RUNNERS
+
+    steps:
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Set global environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+          cat ./tools/variables/workflow.yaml | yq -r '."us-dev" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Checkout release repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: ${{ inputs.testing_mode && env.RELEASE_TESTING_REPOSITORY || env.RELEASE_REPOSITORY }} 
+
+          ref: develop
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: release
+
+      - name: Create eu release file
+
+        if: contains(fromJson(inputs.next_regions), 'eu')
+
+        env:  
+
+          FAAS_GITHUB_TOKEN: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          INPUTS_SOURCE_FILE: "${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.previous_environment }}.yaml"
+
+          INPUTS_TARGET_FILE: "${{ inputs.release_version }}/${{ inputs.release_type }}/eu-${{ inputs.next_env }}.yaml"
+
+          ALLOW_MISSING_TARGET_FILE: "true"
+
+          CLEAN_DESTINATION_CONTENT: "true"
+
+          INPUTS_REPO: ${{ inputs.testing_mode && env.RELEASE_TESTING_REPOSITORY || env.RELEASE_REPOSITORY }} 
+
+        run: python3 ./tools/scripts/release-files-update/release-file-promotion.py
+
