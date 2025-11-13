@@ -1,0 +1,119 @@
+ on: 
+  workflow_call:
+    inputs:
+      service_name:
+        type: string
+        required: true
+      default_branch:
+        type: string
+        required: true
+      build_version:
+        type: string
+        required: true
+jobs:
+  docker_build:
+    name: Docker Build
+    runs-on: 
+      group: WB-US-DEV-BUILD-RUNNERS
+    steps:
+      - name: Checkout app repository
+        uses: actions/checkout@v4
+        with:
+          path: app
+      - name: Checkout configs repository
+        uses: actions/checkout@v4
+        with:
+          repository: pwc-gx-data-services/faas-services-configurations
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+          path: configs
+
+      - name: Checkout reusable-workflows repository
+        uses: actions/checkout@v4
+        with:
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+          ref: ${{ inputs.default_branch }}
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+          path: tools
+
+      - name: Set environment variables
+        run: |
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+          cat ./configs/${{ inputs.service_name }}/build.yaml | yq -r 'keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+      # PULL build secrets - JFROG username/pass
+
+      - name: Import Vault build secrets
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ env.BUILD_VAULT_URL }}
+          namespace: ${{ env.BUILD_VAULT_NAMESPACE }}
+          tlsSkipVerify: true
+          method: jwt
+          role: ${{ env.BUILD_VAULT_ROLE_NAME }}
+          secrets: |
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_JFROG_USERNAME | JFROG_USERNAME ;
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_JFROG_PASSWORD | JFROG_PASSWORD ;
+
+      - name: Login to docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ env.JFROG_USERNAME }}
+          password: ${{ env.JFROG_PASSWORD }}
+
+      - name: Login to generic docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_GENERIC_REGISTRY }}
+          username: ${{ env.JFROG_USERNAME }}
+          password: ${{ env.JFROG_PASSWORD }}
+
+      - name: Set image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.DOCKER_REGISTRY }}/${{ inputs.service_name }}
+          tags: |
+            latest   
+            ${{ inputs.build_version }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app/${{ env.DOCKER_BUILD_CONTEXT }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          file: ${{ env.DOCKERFILE_PATH && format('./app/{0}', env.DOCKERFILE_PATH) || '' }}
+          build-args: |
+            DOCKER_REGISTRY_URL=${{ env.DOCKER_GENERIC_REGISTRY }}
+            ARTIFACTORY_USERNAME=${{ env.JFROG_USERNAME }}
+            NUGET_SOURCE_URL=${{ env.NUGET_REGISTRY }}
+            VERSION=${{ inputs.build_version }}
+          secrets: |
+            ARTIFACTORY_PASSWORD=${{ env.JFROG_PASSWORD }}
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ inputs.service_name }}:latest
+          load: true
+
+      - name: Export docker image & compilation output
+        run: |
+          mkdir ./docker-images
+          DOCKER_IMAGE="${{ env.DOCKER_REGISTRY }}/${{ inputs.service_name }}:${{ inputs.build_version }}"
+          docker save $DOCKER_IMAGE --output ./docker-images/docker-image.tar
+          id=$(docker create $DOCKER_IMAGE)
+          docker cp $id:/app app/publish
+          docker rm -v $id
+
+      - name: Upload docker image as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: ./docker-images/docker-image.tar
+
+      - name: Upload build output as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: '**/publish/**'
