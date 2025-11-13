@@ -1,0 +1,260 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      project_name:
+
+        type: string
+
+        default: workbench
+
+      release_version:
+
+        description: Release version to deploy
+
+        type: string
+
+        required: true
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+      eu_stage_deploy:
+
+        description: Deploy to EU Stage
+
+        type: boolean
+
+        default: true
+
+      eu_prod_deploy:
+
+        description: Deploy to EU Prod
+
+        type: boolean
+
+        default: true
+
+      release_type:
+
+        type: string
+
+        default: services     
+
+
+
+jobs:
+
+  print_release_file:
+
+    name: Print release file
+
+    uses: ./.github/workflows/print-release-file.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      environment: us-qa
+
+      release_version: ${{ inputs.release_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  eu_qa_qa_sign_off:
+
+    name: eu-qa qa sign off
+
+    if: ${{ !failure() && !cancelled() && inputs.eu_stage_deploy }} 
+
+    needs: [print_release_file]
+
+    uses: ./.github/workflows/qa-signoff.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      previous_environment: us-qa
+
+      release_version: ${{ inputs.release_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      next_env: stage
+
+      next_regions: '["eu"]'
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+  
+
+  eu_stage_release_sign_off:
+
+    name: eu-stage release sign off
+
+    if: ${{ !failure() && !cancelled() && inputs.eu_stage_deploy }}
+
+    needs: [eu_qa_qa_sign_off]
+
+    uses: ./.github/workflows/release-signoff.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      previous_environment: us-qa
+
+      next_environment: eu-stage
+
+      release_version: ${{ inputs.release_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+  
+
+  eu_stage_deploy:
+
+    name: eu-stage deploy
+
+    if: ${{ !failure() && !cancelled() && inputs.eu_stage_deploy }}
+
+    needs: [eu_stage_release_sign_off]
+
+    uses: ./.github/workflows/deploy-batch-helm.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      release_version: ${{ inputs.release_version }}
+
+      environment: eu-stage
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  eu_stage_qa_sign_off:
+
+    name: eu-stage qa sign off
+
+    if: ${{ !failure() && !cancelled() && (inputs.us_prod_deploy || inputs.eu_prod_deploy || inputs.au_prod_deploy || inputs.sg_prod_deploy) }}
+
+    needs: [eu_stage_deploy]
+
+    uses: ./.github/workflows/qa-signoff.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      previous_environment: eu-stage
+
+      release_version: ${{ inputs.release_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      next_regions: '["eu"]'
+
+      next_env: prod
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  eu_prod_release_sign_off:
+
+    name: eu-prod release sign off
+
+    if: ${{ !failure() && !cancelled() && inputs.eu_prod_deploy }}
+
+    needs: [eu_stage_qa_sign_off]
+
+    uses: ./.github/workflows/release-signoff.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      previous_environment: eu-stage
+
+      next_environment: eu-prod
+
+      release_version: ${{ inputs.release_version }}
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
+
+
+  eu_prod_deploy:
+
+    name: eu-prod deploy
+
+    if: ${{ !failure() && !cancelled() && inputs.eu_prod_deploy }}
+
+    needs: [eu_prod_release_sign_off]
+
+    uses: ./.github/workflows/deploy-batch-helm.yaml
+
+    with:
+
+      project_name: ${{ inputs.project_name }}
+
+      release_version: ${{ inputs.release_version }}
+
+      environment: eu-prod
+
+      release_type: ${{ inputs.release_type }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      testing_mode: ${{ inputs.testing_mode }}
+
+    secrets: inherit
+
