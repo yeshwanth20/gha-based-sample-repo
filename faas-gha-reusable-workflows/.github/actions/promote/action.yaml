@@ -1,0 +1,68 @@
+name: 'Promote'
+inputs:
+  service_name:
+    required: true
+  environment:
+    required: true
+  build_version:
+    required: true
+  release_type:
+    type: string
+    default: 'services'
+  jf_username:
+    description: 'JFrog Artifactory username'
+    required: true
+  jf_password:
+    description: 'JFrog Artifactory password'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Set previous environment variables
+      shell: bash
+      run: |
+        cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+        cat ./tools/variables/workflow.yaml | yq -r '."us-dev" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+    - name: Login to source docker registry
+      if: ${{ inputs.release_type == 'services' || inputs.release_type == 'mfe-host' }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKER_REGISTRY }}
+        username: ${{ inputs.jf_username }}
+        password: ${{ inputs.jf_password }}
+    - name: Pull docker image
+      if: ${{ inputs.release_type == 'services' || inputs.release_type == 'mfe-host' }}
+      shell: bash
+      run: docker pull ${{ env.DOCKER_REGISTRY }}/${{ inputs.service_name }}:${{ inputs.build_version }}
+    - name: Save docker registry url
+      shell: bash
+      run: |
+        echo 'DOCKER_REGISTRY_SOURCE=${{ env.DOCKER_REGISTRY }}' >> "$GITHUB_ENV"
+        echo 'JFROG_REPOSITORY_SOURCE=${{ env.JFROG_REPOSITORY }}' >> "$GITHUB_ENV"
+    - name: Set environment variables
+      shell: bash
+      run: |
+        cat ./tools/variables/workflow.yaml | yq -r '."us-${{ inputs.environment }}" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+    - name: Login to target docker registry
+      if: ${{ inputs.release_type == 'services' || inputs.release_type == 'mfe-host' }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKER_REGISTRY }}
+        username: ${{ inputs.jf_username }}
+        password: ${{ inputs.jf_password }}
+    - name: Promote
+      shell: bash
+      run: |
+        if [[ "${{ inputs.release_type }}" == "services" || "${{ inputs.release_type }}" == "mfe-host" ]]; then
+          # Docker image promotion
+          docker tag ${{ env.DOCKER_REGISTRY_SOURCE }}/${{ inputs.service_name }}:${{ inputs.build_version }} ${{ env.DOCKER_REGISTRY }}/${{ inputs.service_name }}:${{ inputs.build_version }}
+          docker push ${{ env.DOCKER_REGISTRY }}/${{ inputs.service_name }}:${{ inputs.build_version }}
+          echo ${{ inputs.jf_password }} | helm registry login ${{ env.DOCKER_REGISTRY_SOURCE }} --username ${{ inputs.jf_username }} --password-stdin
+          # Helm chart promotion
+          helm pull oci://${{ env.DOCKER_REGISTRY_SOURCE }}/helm-charts/${{ inputs.service_name }} --version ${{ inputs.build_version }}
+          echo ${{ inputs.jf_password }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ inputs.jf_username }} --password-stdin
+          helm push ${{ inputs.service_name }}-${{ inputs.build_version }}.tgz oci://${{ env.DOCKER_REGISTRY }}/helm-charts
+        elif [[ "${{ inputs.release_type}}" == "canvas-mfe" ]]; then
+          jf rt cp --url="${{ env.JFROG_URL }}" --user="${{ inputs.jf_username }}" --password="${{ inputs.jf_password }}" --fail-no-op --spec=./tools/scripts/jfrog/copy-canvas-mfe-file-spec.json --spec-vars="service_name=${{ inputs.service_name }};jf_repository_source=${{ env.JFROG_REPOSITORY_SOURCE }};jf_repository_target=${{ env.JFROG_REPOSITORY }};build_version=${{ inputs.build_version }};"
+        fi 
+
