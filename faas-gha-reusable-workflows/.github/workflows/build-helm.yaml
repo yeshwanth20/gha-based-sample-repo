@@ -1,0 +1,67 @@
+on: 
+  workflow_call:
+    inputs:
+      service_name:
+        type: string
+        required: true
+      default_branch:
+        type: string
+        required: true
+      build_version:
+        type: string
+        required: true
+jobs:
+  helm_build:
+    name: Helm Build
+    runs-on: 
+      group: WB-US-DEV-BUILD-RUNNERS
+    steps:
+      - name: Checkout app repository
+        uses: actions/checkout@v4
+        with:
+          path: app
+      - name: Checkout configs repository
+        uses: actions/checkout@v4
+        with:
+          repository: pwc-gx-data-services/faas-services-configurations
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+          path: configs
+      - name: Checkout reusable-workflows repository
+        uses: actions/checkout@v4
+        with:
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+          ref: ${{ inputs.default_branch }}
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+          path: tools
+      - name: Set environment variables
+        run: |
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+          cat ./configs/${{ inputs.service_name }}/build.yaml | yq -r 'keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+      # PULL build secrets - JFROG username/pass
+      - name: Import Vault build secrets
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ env.BUILD_VAULT_URL }}
+          namespace: ${{ env.BUILD_VAULT_NAMESPACE }}
+          tlsSkipVerify: true
+          method: jwt
+          role: ${{ env.BUILD_VAULT_ROLE_NAME }}
+          secrets: |
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_JFROG_USERNAME | JFROG_USERNAME ;
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_JFROG_PASSWORD | JFROG_PASSWORD ;
+      - name: Package & push Helmchart
+        run: |
+          echo ${{ env.JFROG_PASSWORD }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ env.JFROG_USERNAME }} --password-stdin
+          HELM_CHART_PATH="app/deployments/helm/${{ inputs.service_name }}"
+          yq -i '.buildInfo.commitHash = "${{ github.sha }}"' ${HELM_CHART_PATH}/values.yaml
+          yq eval 'with(.dependencies[]; select(.name == "wb-devops-helm-library").repository = "oci://${{ env.DOCKER_REGISTRY }}/helm-charts")' -i ${HELM_CHART_PATH}/Chart.yaml  
+          helm package -u --app-version ${{ inputs.build_version }} --version ${{ inputs.build_version }} $HELM_CHART_PATH
+          helm push ${{ inputs.service_name }}-${{ inputs.build_version }}.tgz oci://${{ env.DOCKER_REGISTRY }}/helm-charts
+      - name: Upload helm chart as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-charts
+          path: ./${{ inputs.service_name }}-${{ inputs.build_version }}.tgz
+
