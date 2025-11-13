@@ -1,0 +1,240 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      project_name:
+
+        type: string
+
+        required: true
+
+      previous_environment:
+
+        required: true
+
+        type: string
+
+      next_environment:
+
+        required: true
+
+        type: string
+
+      release_version:
+
+        required: true
+
+        type: string
+
+      release_type:
+
+        type: string
+
+        default: services
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+        
+
+permissions:
+
+  contents: read
+
+  id-token: write
+
+
+
+jobs:
+
+  release_signoff:
+
+    name: ${{ inputs.next_environment }} release sign off
+
+    environment: release-approval
+
+    runs-on: 
+
+      group: WB-US-DEV-RELEASE-RUNNERS
+
+    steps:
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Set previous global environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+          cat ./tools/variables/workflow.yaml | yq -r '."us-dev" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Import Vault secrets
+
+        uses: hashicorp/vault-action@7709c609789c5e27b757a85817483caadbb5939a #v3.3.0
+
+        with:
+
+          url: ${{ env.VAULT_URL }}
+
+          namespace: ${{ env.VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.VAULT_ENGINE }}/data/us/dev/ci-cd JFROG_USERNAME | JFROG_USERNAME ;
+
+            ${{ env.VAULT_ENGINE }}/data/us/dev/ci-cd JFROG_PASSWORD | JFROG_PASSWORD ;
+
+      - name: Checkout release repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: ${{ inputs.testing_mode && env.RELEASE_TESTING_REPOSITORY || env.RELEASE_REPOSITORY }} 
+
+          ref: develop
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: release
+
+      - name: Login to source docker registry
+
+        if: ${{ (inputs.release_type == 'services' || inputs.release_type == 'canvas-services') }}
+
+        uses: docker/login-action@v3
+
+        with:
+
+          registry: ${{ env.DOCKER_REGISTRY }}
+
+          username: ${{ env.JFROG_USERNAME }}
+
+          password: ${{ env.JFROG_PASSWORD }}
+
+      - name: Login to source Helm registry
+
+        if: ${{ (inputs.release_type == 'services' || inputs.release_type == 'canvas-services') }}
+
+        run: echo ${{ env.JFROG_PASSWORD }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ env.JFROG_USERNAME }} --password-stdin
+
+      - name: Save source repository
+
+        run: |
+
+          echo 'DOCKER_REGISTRY_SOURCE=${{ env.DOCKER_REGISTRY }}' >> "$GITHUB_ENV"
+
+          echo 'JFROG_REPOSITORY_SOURCE=${{ env.JFROG_REPOSITORY }}' >> "$GITHUB_ENV"
+
+      - name: Set global environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '."${{ inputs.testing_mode && 'us-dev' || inputs.next_environment }}" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Login to target docker registry
+
+        if: ${{ (inputs.release_type == 'services' || inputs.release_type == 'canvas-services') }}
+
+        uses: docker/login-action@v3
+
+        with:
+
+          registry: ${{ env.DOCKER_REGISTRY }}
+
+          username: ${{ env.JFROG_USERNAME }}
+
+          password: ${{ env.JFROG_PASSWORD }}
+
+      - name: Login to target Helm registry
+
+        if: ${{ (inputs.release_type == 'services' || inputs.release_type == 'canvas-services') }}
+
+        run: echo ${{ env.JFROG_PASSWORD }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ env.JFROG_USERNAME }} --password-stdin
+
+      - name: Promote services
+
+        run: |
+
+          release_file="release/releases/${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.next_environment }}.yaml"
+
+
+
+          # Extract service names from the YAML file  
+
+          services=$(yq '(.versions // {}) | keys | .[]' "$release_file")
+
+          
+
+          # Iterate over each service
+
+          for service_name in $services; do
+
+            build_version=$(yq eval ".versions[\"$service_name\"]" "$release_file") 
+
+
+
+            echo "Processing service: '$service_name' with version '$build_version'" 
+
+
+
+            if [[ "${{ inputs.release_type}}" == "services" ]] || [[ "${{ inputs.release_type}}" == "canvas-services" ]]; then
+
+              # Docker image promotion
+
+              docker pull ${{ env.DOCKER_REGISTRY_SOURCE }}/$service_name:$build_version
+
+              docker tag ${{ env.DOCKER_REGISTRY_SOURCE }}/$service_name:$build_version ${{ env.DOCKER_REGISTRY }}/$service_name:$build_version
+
+              docker push ${{ env.DOCKER_REGISTRY }}/$service_name:$build_version
+
+
+
+              # Helm chart promotion
+
+              helm pull oci://${{ env.DOCKER_REGISTRY_SOURCE }}/helm-charts/$service_name --version $build_version
+
+              helm push $service_name-$build_version.tgz oci://${{ env.DOCKER_REGISTRY }}/helm-charts
+
+            elif [[ "${{ inputs.release_type}}" == "core-mfes" && "${{ inputs.testing_mode }}" == "false" ]]; then
+
+              jf rt cp --url="${{ env.JFROG_URL }}" --user="${{ env.JFROG_USERNAME }}" --password="${{ env.JFROG_PASSWORD }}" --fail-no-op --spec=./tools/scripts/jfrog/copy-mfe-file-spec.json --spec-vars="service_name=${service_name};jf_repository_source=${{ env.JFROG_REPOSITORY_SOURCE }};jf_repository_target=${{ env.JFROG_REPOSITORY }};build_version=${build_version};environment=${{ inputs.next_environment }};"
+
+            elif [[ "${{ inputs.release_type}}" == "canvas-mfes" && "${{ inputs.testing_mode }}" == "false" ]]; then
+
+              jf rt cp --url="${{ env.JFROG_URL }}" --user="${{ env.JFROG_USERNAME }}" --password="${{ env.JFROG_PASSWORD }}" --fail-no-op --spec=./tools/scripts/jfrog/copy-canvas-mfe-file-spec.json --spec-vars="service_name=${service_name};jf_repository_source=${{ env.JFROG_REPOSITORY_SOURCE }};jf_repository_target=${{ env.JFROG_REPOSITORY }};build_version=${build_version};"
+
+            fi
+
+          done
+
