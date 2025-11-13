@@ -1,0 +1,178 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      service_name:
+
+        type: string
+
+        required: true
+
+      default_branch:
+
+        type: string
+
+        required: true
+
+      build_version:
+
+        type: string
+
+        required: true
+
+      artifact_name:
+
+        type: string
+
+        required: false
+
+        default: 'build-artifact'
+
+
+
+jobs:
+
+  sonarqube_scan:
+
+    name: SonarQube Scan
+
+    runs-on: 
+
+      group: WB-US-DEV-BUILD-RUNNERS
+
+    steps:
+
+      - name: Checkout app repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          path: app
+
+      - name: Checkout configs repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-services-configurations
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: configs
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Set environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+          cat ./configs/${{ inputs.service_name }}/build.yaml | yq -r 'keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Import Vault build secrets
+
+        uses: hashicorp/vault-action@v3
+
+        with:
+
+          url: ${{ env.BUILD_VAULT_URL }}
+
+          namespace: ${{ env.BUILD_VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.BUILD_VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_SONARQUBE_ROOT_CERT | SONARQUBE_ROOT_CERT ;
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_SONARQUBE_TOKEN | SONARQUBE_TOKEN ;
+
+      - name: Download build-artifact
+
+        uses: actions/download-artifact@v4
+
+        with:
+
+          name: ${{ inputs.artifact_name }}
+
+          path: ./app/${{ env.SOURCE_CODE_PATH }}
+
+      - name: SonarQube Scan
+
+        uses: SonarSource/sonarqube-scan-action@v5.0.0
+
+        with:
+
+          projectBaseDir: ./app/${{ env.SOURCE_CODE_PATH }}
+
+          args: >
+
+            -Dsonar.projectKey=${{ env.SONARQUBE_PROJECT_NAME }}
+
+            -Dsonar.projectName=${{ env.SONARQUBE_PROJECT_NAME }}
+
+            -Dsonar.projectVersion=${{ inputs.build_version }}
+
+            -Dsonar.java.source=11
+
+            -Dsonar.exclusions=**/node_modules/**
+
+        env:
+
+          SONAR_TOKEN: ${{ env.SONARQUBE_TOKEN }}
+
+          SONAR_HOST_URL: ${{ env.SONARQUBE_URL }}
+
+          SONAR_ROOT_CERT: ${{ env.SONARQUBE_ROOT_CERT }}
+
+      # TODO - check if we need this
+
+      # - name: SonarQube Quality Gate check
+
+      #   id: sonarqube-quality-gate-check
+
+      #   uses: ./tools/.github/actions/sonarqube-quality-gate-action
+
+      #   with:
+
+      #     scanMetadataReportFile: ./app/${{ env.SOURCE_CODE_PATH }}/.scannerwork/report-task.txt
+
+      #   timeout-minutes: 5
+
+      #   env:
+
+      #     SONAR_TOKEN: ${{ env.SONARQUBE_TOKEN }}
+
+      #     SONAR_HOST_URL: ${{ env.SONARQUBE_URL }}
+
+      #     SONAR_ROOT_CERT: ${{ env.SONARQUBE_ROOT_CERT }}
+
+      - name: "SonarQube Quality Gate Status value"
+
+        run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
+
