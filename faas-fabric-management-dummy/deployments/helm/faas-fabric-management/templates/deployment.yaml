@@ -1,0 +1,12 @@
+{{/* Override the serviceAccountName helper to use our specific vault account */}}
+{{- define "workbench.serviceAccountName" -}}
+{{- if .Values.general.serviceAccountName -}}
+{{ .Values.general.serviceAccountName }}
+{{- else -}}
+{{ include "workbench.serviceName" . }}-{{ include "workbench.stage" . }}
+{{- end -}}
+{{- end -}}
+
+
+{{- include "workbench.deployment" . }}
+
