@@ -1,0 +1,58 @@
+additionalVolumeMounts: {}
+additionalVolumes: {}
+buildInfo:
+  commitHash: ''
+configuration:
+  default:
+    DEFAULT_CONFIG_KEY: 'default-value'
+general:
+  language: dotnet
+  team: Fabric
+  valueStream: fabric
+  serviceAccountName: "vault"
+  project: "FaaS"
+serviceAccount:
+  addToContainer: true
+global:
+  environment: ''
+hpa:
+  cpuPercentage: '80'
+  maxReplicas: '5'
+  memoryPercentage: '95'
+  minReplicas: '2'
+  tpsValue: '70'
+  useSimpleHpa: true
+replicas: '2'
+resources:
+  limits:
+    cpu: '1.0'
+    memory: 1.5Gi
+  requests:
+    cpu: '0.5'
+    memory: 1Gi
+splunk:
+  enabled: false
+# This is temporary until we decide how to handle helm library
+
+image:
+  imagePullSecrets:
+    - name: "faas-docker-jfrog"
+    - name: "faas-generic-docker-jfrog"
+vaultSecrets: []
+
+# no secrets for now
+# - ConnectionStrings__AnalyticsDatabase
+# - Passport__SymmetricSecurityKey
+# - ContextProviders__workbench__serviceAccount__password
+
+ingress:
+  enabled: true
+  path: "/api/v1(/|$)(.*)"
+  pathType: "Prefix"
+
+# Service Account configuration for Vault K8s authentication handled in general section above  
+
+# Service configuration
+service:
+  name: "faas-fabric-management"
+  port: 8080
