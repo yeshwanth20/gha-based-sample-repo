@@ -1,0 +1,11 @@
+apiVersion: v2
+appVersion: fabric-mgmt
+dependencies:
+- name: wb-devops-helm-library
+  repository: oci://devops-repo/helm-charts
+  version: 0.0.1-faas
+description: A Fabric service helm chart for faas-fabric-management
+name: faas-fabric-management
+type: application
+version: 0.0.0
+
