@@ -1,0 +1,94 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      project_name:
+
+        type: string
+
+        required: true
+
+      environment:
+
+        required: true
+
+        type: string
+
+      release_version:
+
+        required: true
+
+        type: string
+
+      release_type:
+
+        type: string
+
+        default: services
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+
+
+jobs:
+
+  print_release_file:
+
+    name: Print release file
+
+    runs-on: 
+
+      group: WB-US-DEV-RELEASE-RUNNERS
+
+    steps:
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: tools    
+
+      - name: Set global environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Print help
+
+        run: | 
+
+          echo "::notice title=Support documentation::https://github.com/pwc-gx-data-services/wb-cto-devops-docs/blob/develop/GHA/release-creation.md"
+
+      - name: Print services
+
+        env:  
+
+          FAAS_GITHUB_TOKEN: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          INPUTS_FILE: "${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+          INPUTS_REPO: ${{ inputs.testing_mode && env.RELEASE_TESTING_REPOSITORY || env.RELEASE_REPOSITORY }} 
+
+        run: python3 ./tools/scripts/release-files-update/print-file.py
+
