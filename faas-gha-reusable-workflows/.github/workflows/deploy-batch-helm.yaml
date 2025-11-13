@@ -1,0 +1,340 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      project_name:
+
+        type: string
+
+        required: true
+
+      release_version:
+
+        required: true
+
+        type: string
+
+      environment:
+
+        required: true
+
+        type: string
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+      release_type:
+
+        type: string
+
+        default: services
+
+
+
+permissions:
+
+  contents: read
+
+  id-token: write
+
+
+
+jobs:
+
+  deploy:
+
+    name: ${{ inputs.environment }} deployment
+
+    environment: ${{ inputs.testing_mode && 'us-dev' || inputs.environment }}
+
+    runs-on: 
+
+      group: WB-${{ inputs.testing_mode && 'us-dev' || inputs.environment }}-RELEASE-RUNNERS
+
+    steps:
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Split environment
+
+        run: |
+
+          environment="${{ inputs.testing_mode && 'us-dev' || inputs.environment }}"
+
+          split=(${environment//-/ })
+
+          echo "REGION=${split[0]}" >> "$GITHUB_ENV"
+
+          echo "ENV=${split[1]}" >> "$GITHUB_ENV"
+
+      - name: Set environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+          cat ./tools/variables/workflow.yaml | yq -r '."${{ inputs.testing_mode && 'us-dev' || inputs.environment }}" // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      - name: Import Vault build secrets
+
+        uses: hashicorp/vault-action@v3
+
+        with:
+
+          url: ${{ env.VAULT_URL }}
+
+          namespace: ${{ env.VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.VAULT_ENGINE }}/data/${{ env.REGION }}/${{ env.ENV }}/ci-cd JFROG_USERNAME | JFROG_USERNAME ;
+
+            ${{ env.VAULT_ENGINE }}/data/${{ env.REGION }}/${{ env.ENV }}/ci-cd JFROG_PASSWORD | JFROG_PASSWORD ;
+
+            ${{ env.KUBE_VAULT_ENGINE }}/data/${{ env.REGION }}/${{ env.ENV }}/kube-config kube | K8S_CONFIG ;
+
+      - name: Checkout release repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: ${{ inputs.testing_mode && env.RELEASE_TESTING_REPOSITORY || env.RELEASE_REPOSITORY }} 
+
+          ref: develop
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          path: release
+
+      - name: Checkout configurations repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: ${{ env.SERVICES_CONFIGURATIONS_REPOSITORY }}
+
+          token: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          ref: develop
+
+          path: configs
+
+      - name: Set K8S context          
+
+        uses: azure/k8s-set-context@v4
+
+        with:
+
+          method: kubeconfig
+
+          kubeconfig: ${{ env.K8S_CONFIG }}
+
+      - name: mfe-host backup SQL
+
+        if: ${{ !failure() && !cancelled() && (inputs.release_type == 'canvas-services') }}
+
+        uses: ./tools/.github/actions/mfe-host-sql-backup
+
+        with:
+
+          backup_name: "mfe-host-manifest-${{ inputs.release_version }}"
+
+          environment: ${{ inputs.testing_mode && 'us-dev' || inputs.environment }}
+
+          jf_username: ${{ env.JFROG_USERNAME }}
+
+          jf_password: ${{ env.JFROG_PASSWORD }}
+
+      - name: Delete ADO resources # Required for migration from ADO to GHA
+
+        run: |
+
+          release_file="release/releases/${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+
+
+          # Extract service names from the YAML file
+
+          services=$(yq '.versions | keys.[]' "$release_file")
+
+
+
+          # Iterate over each service
+
+          for service in $services; do
+
+            # Trim any leading/trailing quotes
+
+            service=$(echo "$service" | tr -d '"')
+
+            kubernetes_namespace=$(yq -r '.deployment.namespaceOverride // "${{ env.K8S_NAMESPACE }}"' ./configs/${service}/${{ env.REGION }}-${{ env.ENV }}.yaml)
+
+
+
+            echo "Using namespace $kubernetes_namespace"
+
+            
+
+            echo "Processing service: $service"
+
+            
+
+            # Check if AppConfig exists for the service
+
+            if kubectl get AppConfig "${service}" -n "$kubernetes_namespace" --no-headers -o custom-columns=":metadata.name" | grep -q '.'; then
+
+              echo "AppConfig exists for $service. Deleting resources..."  
+
+            
+
+              # Delete resources associated with the service  
+
+              kubectl delete secret "${service}" -n "$kubernetes_namespace"
+
+              kubectl delete configmap "${service}" -n "$kubernetes_namespace"
+
+              kubectl delete AppConfig "${service}" -n "$kubernetes_namespace"
+
+
+
+              echo "Resources for $service deleted."
+
+              # helm keeps manual non-conflicting additions to resources, and would not remove existing splunk sidecar
+
+              # even if if is disabled in new deployment. We'll use force flag on first "install" of the helm chart
+
+              # see https://helm.sh/docs/faq/changes_since_helm2/#improved-upgrade-strategy-3-way-strategic-merge-patches
+
+              echo "Setting force env variable to force replacing manifests via helmfile/helm"
+
+              service_underscore=$(echo "$service" | tr - _)
+
+              echo "FORCE_UPGRADE_${service_underscore}=true" >> "$GITHUB_ENV"
+
+            else
+
+              echo "AppConfig for $service does not exist. Skipping deletion."  
+
+            fi  
+
+          done
+
+      - name: Create ${{ inputs.environment }} helmfile
+
+        env:
+
+          INPUTS_SOURCE_FILE: "release/releases/${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+          INPUTS_LATEST_FILE: "release/releases/latest/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+          INPUTS_TARGET_FILE: "release/helmfile.yaml"
+
+          INPUTS_ENVIRONMENT: ${{ inputs.testing_mode && 'us-dev' || inputs.environment }}
+
+          INPUTS_K8S_NAMESPACE: ${{ env.K8S_NAMESPACE }}
+
+          INPUTS_CONFIGS_ROOT_PATH: "configs"
+
+          INPUTS_CONFIGS_ROOT_PATH_HELMFILE: "../configs"
+
+        run: python3 ./tools/scripts/create-helmfile/create-helmfile.py
+
+      - name: Helmfile release
+
+        env:
+
+          HELM_REGISTRY: ${{ env.DOCKER_REGISTRY }}
+
+        run: |
+
+          cd release
+
+          cat helmfile.yaml
+
+          echo ${{ env.JFROG_PASSWORD }} | helm registry login ${{ env.DOCKER_REGISTRY }} --username ${{ env.JFROG_USERNAME }} --password-stdin
+
+          helmfile apply -f ./helmfile.yaml --wait --take-ownership
+
+      - name: Get failed releases
+
+        if: ${{ always() }}
+
+        env:
+
+          CONFIG_FILE_NAME: ${{ env.REGION }}-${{ env.ENV }}.yaml
+
+          CONFIGS_ROOT_PATH: "configs"
+
+        run: |          
+
+          release_file="release/releases/${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+
+
+          # Extract service names from the YAML file
+
+          release_names=$(yq '(.versions // {}) + (.rollback // {}) | keys | .[]' "$release_file")
+
+
+
+          chmod +x ./tools/scripts/deployment-status/get-deployment-status.sh
+
+          
+
+          set +e  # Disable exit on error
+
+          ./tools/scripts/deployment-status/get-deployment-status.sh ${release_names[@]}
+
+          set -e  # Re-enable exit on error
+
+      - name: Merge release with latest file
+
+        env:  
+
+          FAAS_GITHUB_TOKEN: ${{ secrets.FAAS_GITHUB_TOKEN }}
+
+          INPUTS_SOURCE_FILE: "${{ inputs.release_version }}/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+          INPUTS_TARGET_FILE: "latest/${{ inputs.release_type }}/${{ inputs.environment }}.yaml"
+
+          INPUTS_PRINT_JOB_SUMMARY: "source"
+
+          INCLUDE_ROLLBACK_SERVICES: "true"
+
+          INPUTS_BACKUP_FILE: "${{ inputs.release_version }}/${{ inputs.release_type }}/rollback/${{ inputs.environment }}.yaml"
+
+          INPUTS_REPO: ${{ inputs.testing_mode && env.RELEASE_TESTING_REPOSITORY || env.RELEASE_REPOSITORY }} 
+
+        run: python3 ./tools/scripts/release-files-update/release-file-promotion.py
+
