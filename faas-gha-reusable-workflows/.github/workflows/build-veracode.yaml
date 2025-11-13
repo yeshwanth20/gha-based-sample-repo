@@ -1,0 +1,202 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      service_name:
+
+        type: string
+
+        required: true
+
+      default_branch:
+
+        type: string
+
+        required: true
+
+      build_version:
+
+        type: string
+
+        required: true
+
+      artifact_name:
+
+        type: string
+
+        required: false
+
+        default: 'build-artifact'
+
+
+
+jobs:
+
+  veracode_scan:
+
+    name: Veracode Scan
+
+    runs-on: 
+
+      group: WB-US-DEV-BUILD-RUNNERS
+
+    steps:
+
+      - name: Checkout app repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          path: app
+
+      - name: Checkout configs repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-services-configurations
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: configs
+
+      - name: Checkout reusable-workflows repository
+
+        uses: actions/checkout@v4
+
+        with:
+
+          repository: pwc-gx-data-services/faas-gha-reusable-workflows
+
+          ref: ${{ inputs.default_branch }}
+
+          # TODO - we'll need something like FAAS_GITHUB_TOKEN
+
+          token: ${{ secrets.WB_GITHUB_TOKEN }}
+
+          path: tools
+
+      - name: Set environment variables
+
+        run: |
+
+          cat ./tools/variables/workflow.yaml | yq -r '.common // {} | keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+          cat ./configs/${{ inputs.service_name }}/build.yaml | yq -r 'keys[] as $k | "\($k)=\(.[$k])"' >> $GITHUB_ENV
+
+      # PULL build secrets - JFROG username/pass
+
+      - name: Import Vault build secrets
+
+        uses: hashicorp/vault-action@v3
+
+        with:
+
+          url: ${{ env.BUILD_VAULT_URL }}
+
+          namespace: ${{ env.BUILD_VAULT_NAMESPACE }}
+
+          tlsSkipVerify: true
+
+          method: jwt
+
+          role: ${{ env.BUILD_VAULT_ROLE_NAME }}
+
+          secrets: |
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_VERACODE_API_ID | VERACODE_API_ID ;
+
+            ${{ env.VAULT_ENGINE }}/data/us/build FAAS_VERACODE_API_KEY | VERACODE_API_KEY ;
+
+      - name: Download build-artifact
+
+        uses: actions/download-artifact@v4
+
+        with:
+
+          name: ${{ inputs.artifact_name }}
+
+          path: ./app/${{ env.SOURCE_CODE_PATH }}
+
+      - name: Prepare files for Veracode Scan
+
+        run: |
+
+          mkdir ./veracode
+
+          cp -r ./app/${{ env.SOURCE_CODE_PATH }}/* ./veracode
+
+          cd ./veracode
+
+          rm -rf .git*
+
+          rm -rf tests*
+
+          find . -type d -name "node_modules" -exec rm -rf \;
+
+          rm -rf .vscode
+
+          rm -rf .npmrc*
+
+          rm -rf .scannerwork
+
+          rm -rf .project*
+
+          rm -rf .DS_Store
+
+          rm -rf .artifactignore
+
+          echo "==========veracode scan exclude-list=========="
+
+          if [ -d "veracode-setup" ]; then
+
+            cat veracode-setup/exclude-list.txt
+
+            while read -r filename; do
+
+              rm -rf $filename
+
+            done <veracode-setup/exclude-list.txt
+
+          echo "==========veracode scan files=========="
+
+          else 
+
+            echo "Skipping explicit exclusion!"
+
+          fi
+
+          echo "Creating zip file"
+
+          zip -r veracode.zip ./
+
+      - name: Veracode Upload And Scan
+
+        uses: veracode/veracode-uploadandscan-action@98e2a2941b985e55bfe469ebcb970b2e686625e4 #0.2.6
+
+        with:
+
+          appname: ${{ env.VERACODE_APPLICATION_NAME }}
+
+          version: ${{ inputs.build_version }}
+
+          createprofile: false
+
+          createsandbox: true
+
+          deleteincompletescan: 1
+
+          sandboxname: ${{ env.VERACODE_SANDBOX_NAME }}
+
+          filepath: './veracode/veracode.zip'
+
+          vid: '${{ env.VERACODE_API_ID }}'
+
+          vkey: '${{ env.VERACODE_API_KEY }}'
+
