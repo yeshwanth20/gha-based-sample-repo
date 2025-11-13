@@ -1,0 +1,168 @@
+on: 
+
+  workflow_call:
+
+    inputs:
+
+      service_name:
+
+        required: true
+
+        type: string
+
+      default_branch:
+
+        type: string
+
+        default: develop
+
+      skip_sonarqube:
+
+        type: boolean
+
+        default: false
+
+      skip_veracode:
+
+        type: boolean
+
+        default: false
+
+      testing_mode:
+
+        type: boolean
+
+        default: false
+
+      skip_helm_build:
+
+        type: boolean
+
+        default: false
+
+      skip_docker_build:
+
+        type: boolean
+
+        default: false
+
+
+
+permissions:
+
+  contents: read
+
+  id-token: write
+
+
+
+jobs:
+
+  set_version:
+
+    name: Set version
+
+    runs-on: 
+
+      group: WB-US-DEV-BUILD-RUNNERS  # The runner group to execute the job on.
+
+    outputs:
+
+      build_version: ${{ steps.build_data.outputs.build_version }}  # The version of the build produced by the compile job.
+
+    steps:
+
+      - name: Output build version
+
+        id: build_data
+
+        run: echo "build_version=${{ github.event_name == 'release' && github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name || github.run_number) }}" >> "$GITHUB_OUTPUT"  # Output the build version.
+
+
+
+  docker_build:
+
+    name: Docker Build
+
+    if: ${{ !failure() && !cancelled() && !inputs.skip_docker_build }}
+
+    needs: [set_version]
+
+    uses: ./.github/workflows/build-docker.yaml
+
+    with:
+
+      service_name: ${{ inputs.service_name }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      build_version: ${{ needs.set_version.outputs.build_version }}
+
+    secrets: inherit
+
+
+
+  sonarqube_scan:
+
+    name: SonarQube Scan
+
+    if: ${{ !failure() && !cancelled() && !inputs.skip_sonarqube }}
+
+    needs: [docker_build, set_version]
+
+    uses: ./.github/workflows/build-sonarqube.yaml
+
+    with:
+
+      service_name: ${{ inputs.service_name }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      build_version: ${{ needs.set_version.outputs.build_version }}
+
+    secrets: inherit
+
+
+
+  veracode_scan:
+
+    name: Veracode Scan
+
+    if: ${{ !failure() && !cancelled() && !inputs.skip_veracode }}
+
+    needs: [docker_build, sonarqube_scan, set_version]
+
+    uses: ./.github/workflows/build-veracode.yaml
+
+    with:
+
+      service_name: ${{ inputs.service_name }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      build_version: ${{ needs.set_version.outputs.build_version }}
+
+    secrets: inherit
+
+
+
+  helm_build:
+
+    name: Helm Build
+
+    if: ${{ !failure() && !cancelled() && !inputs.skip_helm_build }}
+
+    needs: [set_version, veracode_scan, docker_build, sonarqube_scan]
+
+    uses: ./.github/workflows/build-helm.yaml
+
+    with:
+
+      service_name: ${{ inputs.service_name }}
+
+      default_branch: ${{ inputs.default_branch }}
+
+      build_version: ${{ needs.set_version.outputs.build_version }}
+
+    secrets: inherit
+
