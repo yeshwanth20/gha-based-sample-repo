@@ -1,0 +1,156 @@
+common:
+
+  # TODO temporarily using WB generic docker registry, because the fabric one does not have - see RITM22078080
+
+  DOCKER_GENERIC_REGISTRY: g00021-pwc-gx-pwclabs-data-platform-docker.artifacts-west.pwc.com
+
+  # DOCKER_GENERIC_REGISTRY: fabric-jfp-west-virtual-docker-dev001.artifacts-west.pwc.com
+
+  DOCKER_REGISTRY: fabric-jfp-west-local-dev-docker-dev001.artifacts-west.pwc.com
+
+  JFROG_REPOSITORY: fabric-jfp-west-local-dev-generic-dev001
+
+  JFROG_URL: https://artifacts-west.pwc.com/artifactory
+
+  SONARQUBE_URL: https://sonar.pwcinternal.com
+
+  NUGET_REGISTRY: https://artifacts-west.pwc.com/artifactory/api/nuget/v3/fabric-jfp-west-virtual-nuget-dev001/index.json
+
+  NUGET_REGISTRY_PUSH: https://artifacts-west.pwc.com/artifactory/api/nuget/v3/fabric-jfp-west-local-nuget-dev001/index.json
+
+  VAULT_ENGINE: fabric-as-a-service-app
+
+  KUBE_VAULT_ENGINE: fabric-as-a-service-app
+
+  K8S_NAMESPACE: faas-services-#__#REGION#__#-#__#ENV#__#
+
+  RITM_DESCRIPTION: "---This is an auto-generated RITM by Github Actions---\\n This release
+
+    consists of running a workflow to deploy the services for release #__#RELEASE_NUMBER#__#"
+
+  RITM_DEPLOYMENT_STEPS: "---This is an auto-generated RITM by Github Actions---\\n Click
+
+    the workflow link - #__#WORKFLOW_LINK#__# \\n\\n Approve the deployment stage"
+
+  RITM_NOTIFY_TO: gbl_approvers@pwc.com
+
+  RITM_PLATFORM_IMPACT: Platform Change - No Downtime
+
+  RITM_POST_DEPLOYMENT_VALIDATION: "---This is an auto-generated RITM by Github Actions---\\n Workflow is marked as a successful deployment."
+
+  RITM_PRE_REQUISITES: 'No'
+
+  RITM_MANUAL_STEPS: 'No'
+
+  RITM_DEPENDENCIES: 'No'
+
+  RITM_REQUESTED_FOR: vkandepi001
+
+  RITM_TEAM_NAME: Devops
+
+  RITM_ROLLBACK_STEPS: "---This is an auto-generated RITM by Github Actions---\\n Update the release versions file with previous version and redeploy this workflow"
+
+  RITM_VERSION: Ad-Hoc
+
+  RITM_VERSION_NUMBER: Ad-Hoc
+
+  RITM_API_URL: https://api.pwc.com/pwcnetwork/service_now/api/ipwc/request_item/create/07148b7cdbbdb740a416f5261d9619bb/ritm_nv
+
+  RITM_JIRA_TICKET: N/A
+
+  BUILD_VAULT_URL: https://vault-us.pwcinternal.com
+
+  BUILD_VAULT_NAMESPACE: ifs/yzebk/fabric-lower
+
+  BUILD_VAULT_ROLE_NAME: az-wst-yzebk-dev-01-jwt
+
+  VAULT_KUBECONFIG_PATH: 'us/dev/kube-config'
+
+  RELEASE_REPOSITORY: pwc-gx-data-services/faas-gha-release-workflows
+
+  SERVICES_CONFIGURATIONS_REPOSITORY: pwc-gx-data-services/faas-services-configurations
+
+us-dev:
+
+  VAULT_URL: https://vault-us.pwcinternal.com
+
+  VAULT_NAMESPACE: ifs/yzebk/fabric-lower
+
+  VAULT_ROLE_NAME: az-wst-yzebk-dev-01-jwt
+
+  KUBE_VAULT_URL: https://vault-us.pwcinternal.com
+
+  KUBE_VAULT_NAMESPACE: ifs/yzebk/fabric-lower
+
+  KUBE_VAULT_ENV_GROUP: lower
+
+  VAULT_KUBECONFIG_PATH: 'us/dev/kube-config'
+
+  K8S_NAMESPACE: faas-services-us-dev
+
+us-qa:
+
+  DOCKER_REGISTRY: fabric-jfp-west-local-qa-docker-dev001.artifacts-west.pwc.com
+
+  JFROG_REPOSITORY: fabric-jfp-west-local-qa-generic-dev001
+
+  VAULT_URL: https://vault-us.pwcinternal.com
+
+  VAULT_NAMESPACE: ifs/yzebk/fabric-lower
+
+  VAULT_ROLE_NAME: az-wst-yzebk-qa-01-jwt
+
+  KUBE_VAULT_URL: https://vault-us.pwcinternal.com
+
+  KUBE_VAULT_NAMESPACE: ifs/yzebk/fabric-lower
+
+  KUBE_VAULT_ENV_GROUP: lower
+
+  VAULT_KUBECONFIG_PATH: 'us/qa/kube-config'
+
+  K8S_NAMESPACE: faas-services-us-qa
+
+eu-stage:
+
+  DOCKER_REGISTRY: fabric-jfp-west-local-stg-docker-dev001.artifacts-west.pwc.com
+
+  JFROG_REPOSITORY: fabric-jfp-west-local-stg-generic-dev001
+
+  VAULT_URL: https://vault-eu.pwcinternal.com
+
+  VAULT_NAMESPACE: ifs/ahaxu/fabric-upper
+
+  VAULT_ROLE_NAME: az-cnt-ahaxu-stg-01-jwt
+
+  KUBE_VAULT_URL: https://vault-eu.pwcinternal.com
+
+  KUBE_VAULT_NAMESPACE: ifs/ahaxu/fabric-upper
+
+  KUBE_VAULT_ENV_GROUP: nonprod
+
+  VAULT_KUBECONFIG_PATH: 'eu/stage/kube-config'
+
+  K8S_NAMESPACE: faas-services-eu-stage
+
+eu-prod:
+
+  DOCKER_REGISTRY: fabric-jfp-west-local-docker-prod001.artifacts-west.pwc.com
+
+  JFROG_REPOSITORY: fabric-jfp-west-local-docker-prod001
+
+  VAULT_URL: https://vault-eu.pwcinternal.com
+
+  VAULT_NAMESPACE: ifs/ahaxu/fabric-upper
+
+  VAULT_ROLE_NAME: az-cnt-ahaxu-prod-01-jwt
+
+  KUBE_VAULT_URL: https://vault-eu.pwcinternal.com
+
+  KUBE_VAULT_NAMESPACE: ifs/ahaxu/fabric-upper
+
+  KUBE_VAULT_ENV_GROUP: prod
+
+  VAULT_KUBECONFIG_PATH: 'eu/prod/kube-config'
+
+  K8S_NAMESPACE: faas-services-eu-prod
+
