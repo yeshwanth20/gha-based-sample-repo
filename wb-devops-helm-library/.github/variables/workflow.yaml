@@ -1,0 +1,2 @@
+common:
+  DOCKER_REGISTRY: g00021-pwc-gx-pwclabs-data-platform-dev-docker-local.artifacts-west.pwc.com
