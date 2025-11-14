@@ -1,0 +1,43 @@
+name: Test library for PR
+
+on: 
+  pull_request:
+    
+env:
+  SERVICE_NAME: wb-devops-helm-library
+
+permissions:
+  contents: read
+
+jobs:
+  lint_template:
+    name: Lint & template
+    runs-on: 
+      group: WB-US-DEV-BUILD-RUNNERS
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint library Helm Chart
+        run: |
+          helm lint wb-devops-helm-library
+      - name: Template test service Helm Chart
+        run: |
+          cd test-service-chart
+          helm dep up .
+          mkdir template-results
+          helm template . --debug &> template-results/original.yaml
+          # helm upgrade --install --dry-run=client --debug test-release .
+          test_value_files=$(find test-values -name '*.yaml')
+          for values_file in $test_value_files; do
+            result_file_name=$(echo $values_file | cut -d '/' -f2-)
+            result_path="template-results/${result_file_name}"
+            echo "Templating ${values_file} into ${result_path}"
+            helm template . -f $values_file --debug &> $result_path
+            # echo "Dry run for ${values_file}"
+            # helm upgrade --install --dry-run=client --debug -f $values_file test-release .
+          done
+      - name: Upload template results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: template-results
+          path: test-service-chart/template-results/**/*
